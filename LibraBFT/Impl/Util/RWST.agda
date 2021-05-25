@@ -63,19 +63,15 @@ module LibraBFT.Impl.Util.RWST (ℓ-State : Level) where
   gets : (St → A) → RWST Ev Wr St A
   gets f = RWST-bind get (RWST-return ∘ f)
 
-{- TODO-2: extend Lens to work with different levels and reinstate this
-  use : Lens St A → RWST Ev Wr St A
-  use f = RWST-bind get (RWST-return ∘ (_^∙ f))
--}
+  use : Lens (Lift ℓ-A St) (Lift {ℓ-A} ℓ-State A) → RWST Ev Wr St A
+  use f = RWST-bind get (RWST-return ∘ lower ∘ (_^∙ f) ∘ lift)
 
   modify : (St → St) → RWST Ev Wr St Unit
   modify f = rwst (λ _ st → unit , f st , [])
 
-{- TODO-2: extend Lens to work with different levels and reinstate this
-  modify' : ∀ {A} → Lens St A → A → RWST Ev Wr St Unit
-  modify' l val = modify λ x → x [ l := val ]
+  modify' : ∀ {A : Set ℓ-A} → Lens (Lift ℓ-A St) (Lift ℓ-State A) → A → RWST Ev Wr St Unit
+  modify' l val = modify (lower ∘ set l (lift val) ∘ lift)
   syntax modify' l val = l ∙= val
--}
 
   put : St → RWST Ev Wr St Unit
   put s = modify (λ _ → s)
