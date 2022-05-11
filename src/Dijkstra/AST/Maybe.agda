@@ -7,7 +7,9 @@
 module Dijkstra.AST.Maybe where
 
 open import Dijkstra.AST.Core
-open import Haskell.Prelude using (_>>_; _>>=_; just; Maybe; nothing; return; Unit; unit; Void)
+open import Haskell.Prelude
+  using (_>>_; _>>=_; just; Maybe; nothing; return; Unit; unit; Void)
+open import Data.Product using (Σ)
 import      Level
 open import Relation.Binary.PropositionalEquality
 open import Util.Prelude using (contradiction)
@@ -68,6 +70,14 @@ MaybebindPost : ∀ {A B} → (A → PredTrans B) → Post B → Post A
 MaybebindPost _ P nothing  = P nothing
 MaybebindPost f P (just y) = f y P unit
 
+MaybebindPost⊆
+  : ∀ {A B} (f : A → PredTrans B) (P₁ : Post B) (P₂ : Post A)
+    → (P₁ nothing → P₂ nothing)
+    → (∀ x → f x P₁ unit → P₂ (just x))
+    → MaybebindPost f P₁ ⊆ₒ P₂
+MaybebindPost⊆ f P₁ P₂ n⊆ j⊆ nothing wp = n⊆ wp
+MaybebindPost⊆ f P₁ P₂ n⊆ j⊆ (just x) wp = j⊆ x wp
+
 MaybePT : ASTPredTrans MaybeOps MaybeTypes
 ASTPredTrans.returnPT MaybePT x P i               = P (just x)
 -- Note that it is important *not* to pattern match the input as 'unit'.  Even though this is the
@@ -112,6 +122,9 @@ ASTPredTransMono.opPTMono₁    MaybePTMono Maybe-bail f monoF P₁ P₂ P₁⊆
 ASTPredTransMono.opPTMono₂    MaybePTMono Maybe-bail f₁ f₂ f₁⊑f₂ P i wp =
   wp
 
+maybePTMono      = ASTPredTransMono.predTransMono MaybePTMono
+maybePTMonoBind₂ = ASTPredTransMono.bindPTMono₂ MaybePTMono
+
 MaybeSuf : ASTSufficientPT MaybeOpSem MaybePT
 ASTSufficientPT.returnSuf MaybeSuf x P i wp = wp
 ASTSufficientPT.bindSuf   MaybeSuf {A} {B} m f mSuf fSuf P unit wp
@@ -121,6 +134,18 @@ ASTSufficientPT.bindSuf   MaybeSuf {A} {B} m f mSuf fSuf P unit wp
                           in fSuf y P unit wp'
 ASTSufficientPT.opSuf     MaybeSuf Maybe-bail f fSuf P i wp = wp
 
+maybeSufficient = ASTSufficientPT.sufficient MaybeSuf
+
+maybeSuffBind
+  : ∀ {A B P} {Q : Post A} {i} (m : MaybeD A) (f : A → MaybeD B)
+    → predTrans (m >>= f) P i
+    → (P nothing → Q nothing)
+    → (∀ x → predTrans (f x) P unit → Q (just x))
+    → Q (runMaybe m i)
+maybeSuffBind{P = P}{Q}{i} m f wp n⊆ j⊆ =
+  MaybebindPost⊆ (λ x → predTrans (f x)) P Q n⊆ j⊆
+    (runMaybe m i) (maybeSufficient m _ i wp _ refl)
+
 private
   bailWorksSuf : ∀ {A : Set} (a : A) i → (runMaybe (prog₁ a) i ≡ nothing)
 --bailWorksSuf a i =
@@ -128,6 +153,16 @@ private
   bailWorksSuf a i
     with runMaybe (prog₁ a) i
   ... | x≡x = refl
+
+  postulate
+    maybeNeccessary
+      : ∀ {A} (m : MaybeD A) P i → P (runMaybe m i) → predTrans m P i
+
+    maybePTApp
+      : ∀ {A} {P₁ P₂ : Post A} (m : MaybeD A) i
+        → predTrans m (λ o → P₁ o → P₂ o) i
+        → predTrans m P₁ i
+        → predTrans m P₂ i
 
 ------------------------------------------------------------------------------
 
@@ -142,7 +177,7 @@ module Partiality where
   open Syntax
   open import Agda.Builtin.Unit using (⊤; tt)
   open import Data.Empty using (⊥; ⊥-elim)
-  open import Data.Nat public using () renaming (ℕ to Nat; zero to Zero; suc to Succ)
+  open import Data.Nat public renaming (ℕ to Nat; zero to Zero; suc to Succ)
   open import Data.Nat.DivMod
   open import Data.Product using (∃ ; ∃-syntax ; _×_)
   open import Function.Base using (case_of_)
@@ -183,6 +218,16 @@ module Partiality where
                   ASTbind (⟦ e2 ⟧) (\v2 ->
                    (v1 ÷ v2)))
 
+  Partial : {A : Set} → (P : A → Set) → Maybe A → Set
+  Partial P nothing = ⊥
+  Partial P (just x) = P x
+
+  wpPartial
+    : {A : Set} {B : A → Set} (f : (x : A) → MaybeD (B x))
+      (P : (x : A) → B x → Set) → A → Set
+  wpPartial f P x =
+    predTrans (f x) (Partial (P x)) unit
+
   record Pair {l l'} (a : Set l) (b : Set l') : Set (l Level.⊔ l') where
     constructor _,_
     field
@@ -207,8 +252,7 @@ module Partiality where
   --   by making the post condition not hold when the computation returns nothing.
   -- PN is the functional equivalent, where PN plays the role of mustPT in the paper.
   PN : Expr → Post Nat
-  PN e nothing  = ⊥
-  PN e (just n) = e ⇓ n
+  PN e = Partial (e ⇓_)
 
   -- TUTORIAL:
   -- Demonstrates how predTransMono can be used
@@ -237,37 +281,52 @@ module Partiality where
     PN⊆₁ (just n) e₁⇓n .(just n) refl =
       ASTPredTransMono.predTransMono MaybePTMono ⟦ e₂ ⟧ (PN e₂) _ (PN⊆₂ n e₁⇓n) unit ih₂
 
-  dom : (Expr -> MaybeD Nat)
-     -> Expr
-     -> Set
-  dom f e =
-    case runMaybe (f e) unit of λ where
-      nothing  -> ⊥
-      (just _) -> ⊤
+  Dom : {A : Set} {B : A → Set}
+        → ((x : A) → MaybeD (B x)) → A → Set
+  Dom f = wpPartial f λ _ _ → ⊤
 
-  Dom : (Expr -> MaybeD Nat) -> Expr -> Set
-  Dom f a@(Val _)     =  dom f a
-  Dom f a@(Div el er) = (dom f a) ∧ Dom f el ∧ Dom f er
+  DomDiv : ∀ {e₁ e₂}
+           → Dom ⟦_⟧ (Div e₁ e₂)
+           → Dom ⟦_⟧ e₁
+             ∧ wpPartial ⟦_⟧ (λ _ → _> 0) e₂
+  Pair.fst (DomDiv{e₁}{e₂} dom) =
+    maybePTMono ⟦ e₁ ⟧ _ _ ⊆Partial unit dom
+    where
+    ⊆Partial : _ ⊆ₒ Partial (λ _ → ⊤)
+    ⊆Partial nothing wp = wp _ refl
+    ⊆Partial (just m) wp = tt
+  Pair.snd (DomDiv{e₁}{e₂} dom) =
+    maybeSuffBind {Q = λ _ → _} ⟦ e₁ ⟧
+      (λ m → ⟦ e₂ ⟧ >>= λ n → m ÷ n) dom (λ ())
+      λ m wp →
+        maybePTMono ⟦ e₂ ⟧ _ _ (⊆Partial m) unit wp
+      where
+      ⊆Partial : ∀ m → _ ⊆ₒ Partial (_> 0)
+      ⊆Partial m nothing wp = wp _ refl
+      ⊆Partial m (just Zero) wp = ⊥-elim (wp _ refl)
+      ⊆Partial m (just (Succ n)) wp = s≤s z≤n
+ 
+  sound : ∀ (e : Expr) i → Dom ⟦_⟧ e → predTrans ⟦ e ⟧ (PN e) i
+  sound (Val x) unit dom = ⇓Base
+  sound (Div e₁ e₂) unit dom =
+    maybePTMono ⟦ e₁ ⟧ (PN e₁) _ PN⊆₁ unit ih₁
+    where
+    ih₁ = sound e₁ unit (Pair.fst (DomDiv{e₁}{e₂} dom))
+    ih₂ =
+      sound e₂ unit
+        (maybePTMono ⟦ e₂ ⟧ _ _ (λ { nothing () ; (just x) _ → tt}) unit
+          (Pair.snd (DomDiv{e₁}{e₂} dom)))
 
-  sound : ∀ (e : Expr) i → Dom ⟦_⟧ e → ASTPredTrans.predTrans MaybePT (⟦ e ⟧) (PN e) i
-  sound (Val _)        _                 _   = ⇓Base
-  sound (Div e₁ e₂) unit (sdd , (sd₁ , sd₂)) =
-    ASTPredTransMono.predTransMono MaybePTMono ⟦ e₁ ⟧ (PN e₁) _ PN⊆₁ unit ih₁
-   where
-    ih₁ = sound e₁ unit sd₁
-    ih₂ = sound e₂ unit sd₂
-
-    PN⊆₂ : ∀ n → e₁ ⇓ n → PN e₂ ⊆ₒ _
-    PN⊆₂ _ e₁⇓n (just (Succ _)) e₂⇓Succ .(just (Succ _)) refl = ⇓Step e₁⇓n e₂⇓Succ
-    PN⊆₂ _ e₁⇓n (just       0)  e₂⇓0     (just       0)  refl
-      with   runMaybe ⟦ e₁ ⟧ unit | inspect (runMaybe ⟦ e₁ ⟧) unit
-           | runMaybe ⟦ e₂ ⟧ unit | inspect (runMaybe ⟦ e₂ ⟧) unit
-           | ASTSufficientPT.sufficient MaybeSuf ⟦ e₂ ⟧ _ unit ih₂
-    ... | just _ | _ | nothing       | [ eq₂ ] | _ rewrite eq₂ = ⊥-elim sdd
-    ... | just _ | _ | just 0        | [ eq₂ ] | _ rewrite eq₂ = ⊥-elim sdd
-    ... | just l | _ | just (Succ _) | [ eq₂ ] | e₂⇓Succ =
-      absurd (Succ _ ≡ 0) case (deterministic e₂⇓Succ e₂⇓0) of λ ()
+    PN⊆₂ : ∀ n → e₁ ⇓ n → Partial (λ n → e₂ ⇓ n ∧ (n > 0)) ⊆ₒ _
+    PN⊆₂ n e₁⇓n (just (Succ x)) wp .(just (Succ x)) refl =
+      ⇓Step e₁⇓n (Pair.fst wp)
 
     PN⊆₁ : PN e₁ ⊆ₒ _
-    PN⊆₁ (just n) e₁⇓n .(just n) refl =
-      ASTPredTransMono.predTransMono MaybePTMono ⟦ e₂ ⟧ (PN e₂) _ (PN⊆₂ n e₁⇓n) unit ih₂
+    PN⊆₁ (just m) e₁⇓m ._ refl =
+      maybePTMono ⟦ e₂ ⟧ _ _ (PN⊆₂ m e₁⇓m) unit
+        (maybePTApp ⟦ e₂ ⟧ unit
+          (maybePTMono ⟦ e₂ ⟧ _ _
+            (λ where
+              (just x) wp₁ wp₂ → wp₂ , wp₁)
+            unit ((Pair.snd (DomDiv{e₁}{e₂} dom))))
+          ih₂)
